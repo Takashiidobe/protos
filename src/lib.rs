@@ -272,14 +272,14 @@ impl Parser {
 
         let mut enums = vec![];
         let mut fields = vec![];
-        let mut inner_message = None;
+        let mut messages = vec![];
 
         while self.is_message_field() || self.is_enum() || self.is_message() {
             self.skip_whitespace_or_comment();
             match (self.is_message_field(), self.is_enum(), self.is_message()) {
                 (true, false, false) => fields.push(self.consume_message_field()),
                 (false, true, false) => enums.push(self.consume_enum()),
-                (false, false, true) => inner_message = Some(Box::new(self.consume_message())),
+                (false, false, true) => messages.push(self.consume_message()),
                 _ => unreachable!(),
             }
             self.skip_whitespace_or_comment();
@@ -291,7 +291,7 @@ impl Parser {
 
         Message {
             name,
-            inner_message,
+            messages,
             enums,
             fields,
         }
@@ -308,7 +308,7 @@ enum Frequency {
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Default)]
 struct Message {
     name: String,
-    inner_message: Option<Box<Message>>,
+    messages: Vec<Message>,
     enums: Vec<Enum>,
     fields: Vec<MessageField>,
 }
@@ -415,42 +415,75 @@ mod tests {
 
                     repeated int32 second_inner_inner_field = 2;
                 }
+
+                message second_inner_inner {
+                    repeated int32 inner_field = 1;
+
+                    enum inner_inner_inner_enum {
+                        one = 1;
+                        two = 2;
+                    }
+                }
             }
         }
 //  xd";
         let mut parser = setup_parser(input);
 
         let output = parser.consume_message();
-
         let expected = Message {
             name: "blah".to_string(),
-            inner_message: Some(Box::new(Message {
+            messages: vec![Message {
                 name: "inner".to_string(),
-                inner_message: Some(Box::new(Message {
-                    name: "inner_inner".to_string(),
-                    inner_message: None,
-                    enums: vec![Enum {
-                        name: "inner_inner_enum".to_string(),
-                        fields: vec![EnumField {
-                            name: "one".to_string(),
-                            position: 1,
+                messages: vec![
+                    Message {
+                        name: "inner_inner".to_string(),
+                        messages: vec![],
+                        enums: vec![Enum {
+                            name: "inner_inner_enum".to_string(),
+                            fields: vec![EnumField {
+                                name: "one".to_string(),
+                                position: 1,
+                            }],
                         }],
-                    }],
-                    fields: vec![
-                        MessageField {
-                            t: Type::String,
-                            frequency: Some(Frequency::Optional),
-                            name: "inner_inner_field".to_string(),
-                            position: 1,
-                        },
-                        MessageField {
+                        fields: vec![
+                            MessageField {
+                                t: Type::String,
+                                frequency: Some(Frequency::Optional),
+                                name: "inner_inner_field".to_string(),
+                                position: 1,
+                            },
+                            MessageField {
+                                t: Type::Int32,
+                                frequency: Some(Frequency::Repeated),
+                                name: "second_inner_inner_field".to_string(),
+                                position: 2,
+                            },
+                        ],
+                    },
+                    Message {
+                        name: "second_inner_inner".to_string(),
+                        messages: vec![],
+                        enums: vec![Enum {
+                            name: "inner_inner_inner_enum".to_string(),
+                            fields: vec![
+                                EnumField {
+                                    name: "one".to_string(),
+                                    position: 1,
+                                },
+                                EnumField {
+                                    name: "two".to_string(),
+                                    position: 2,
+                                },
+                            ],
+                        }],
+                        fields: vec![MessageField {
                             t: Type::Int32,
                             frequency: Some(Frequency::Repeated),
-                            name: "second_inner_inner_field".to_string(),
-                            position: 2,
-                        },
-                    ],
-                })),
+                            name: "inner_field".to_string(),
+                            position: 1,
+                        }],
+                    },
+                ],
                 enums: vec![Enum {
                     name: "inner_enum".to_string(),
                     fields: vec![EnumField {
@@ -472,7 +505,7 @@ mod tests {
                         position: 2,
                     },
                 ],
-            })),
+            }],
             enums: vec![
                 Enum {
                     name: "Person".to_string(),
@@ -597,7 +630,7 @@ mod tests {
             res,
             Message {
                 name: "Person".to_string(),
-                inner_message: None,
+                messages: vec![],
                 enums: vec![],
                 fields: vec![
                     MessageField {
