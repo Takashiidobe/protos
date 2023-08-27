@@ -12,7 +12,23 @@ const TYPES: &[&str] = &["string", "int32"];
 
 const FREQUENCIES: &[&str] = &["optional", "repeated", "required"];
 
+enum CompoundTypeMarker {
+    Message,
+    Oneof,
+}
+
+enum CompoundType {
+    Message(Message),
+    Oneof(Oneof),
+}
+
 impl Parser {
+    fn new(input: &str) -> Self {
+        Parser {
+            body: str_to_vec(input),
+            curr_index: 0,
+        }
+    }
     fn peek_curr(&self) -> Option<char> {
         if self.is_in_bounds() {
             Some(self.body[self.curr_index])
@@ -144,11 +160,9 @@ impl Parser {
         self.skip(';');
         self.skip_whitespace_or_comment();
 
-        MessageField {
-            frequency,
-            t,
-            name,
-            position,
+        match t {
+            Type::String => MessageField::String(frequency, name, position),
+            Type::Int32 => MessageField::Int32(frequency, name, position),
         }
     }
 
@@ -261,9 +275,33 @@ impl Parser {
         self.matches("message")
     }
 
+    fn is_oneof(&self) -> bool {
+        self.matches("oneof")
+    }
+
+    fn consume_oneof(&mut self) -> Oneof {
+        let oneof = self.consume_compound_type(CompoundTypeMarker::Oneof);
+        match oneof {
+            CompoundType::Oneof(oneof) => oneof,
+            _ => unreachable!(),
+        }
+    }
+
     fn consume_message(&mut self) -> Message {
+        let message = self.consume_compound_type(CompoundTypeMarker::Message);
+
+        match message {
+            CompoundType::Message(message) => message,
+            _ => unreachable!(),
+        }
+    }
+
+    fn consume_compound_type(&mut self, marker: CompoundTypeMarker) -> CompoundType {
         self.skip_whitespace_or_comment();
-        self.consume("message");
+        match marker {
+            CompoundTypeMarker::Oneof => self.consume("oneof"),
+            CompoundTypeMarker::Message => self.consume("message"),
+        };
         self.skip_whitespace_or_comment();
         let name = self.consume_name();
         self.skip_whitespace_or_comment();
@@ -273,14 +311,21 @@ impl Parser {
         let mut enums = vec![];
         let mut fields = vec![];
         let mut messages = vec![];
+        let mut oneofs = vec![];
 
-        while self.is_message_field() || self.is_enum() || self.is_message() {
+        while self.is_message_field() || self.is_enum() || self.is_message() || self.is_oneof() {
             self.skip_whitespace_or_comment();
-            match (self.is_message_field(), self.is_enum(), self.is_message()) {
-                (true, false, false) => fields.push(self.consume_message_field()),
-                (false, true, false) => enums.push(self.consume_enum()),
-                (false, false, true) => messages.push(self.consume_message()),
-                _ => unreachable!(),
+
+            if self.is_message_field() {
+                fields.push(self.consume_message_field());
+            } else if self.is_enum() {
+                enums.push(self.consume_enum());
+            } else if self.is_message() {
+                messages.push(self.consume_message());
+            } else if self.is_oneof() {
+                oneofs.push(self.consume_oneof());
+            } else {
+                unreachable!();
             }
             self.skip_whitespace_or_comment();
         }
@@ -289,11 +334,21 @@ impl Parser {
         self.skip('}');
         self.skip_whitespace_or_comment();
 
-        Message {
-            name,
-            messages,
-            enums,
-            fields,
+        match marker {
+            CompoundTypeMarker::Message => CompoundType::Message(Message {
+                name,
+                messages,
+                enums,
+                fields,
+                oneofs,
+            }),
+            CompoundTypeMarker::Oneof => CompoundType::Oneof(Oneof {
+                name,
+                messages,
+                enums,
+                fields,
+                oneofs,
+            }),
         }
     }
 }
@@ -311,6 +366,16 @@ struct Message {
     messages: Vec<Message>,
     enums: Vec<Enum>,
     fields: Vec<MessageField>,
+    oneofs: Vec<Oneof>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Default)]
+struct Oneof {
+    name: String,
+    messages: Vec<Message>,
+    enums: Vec<Enum>,
+    fields: Vec<MessageField>,
+    oneofs: Vec<Oneof>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -353,23 +418,14 @@ impl From<String> for Type {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-struct MessageField {
-    t: Type,
-    frequency: Option<Frequency>,
-    name: String,
-    position: u32,
+enum MessageField {
+    Int32(Option<Frequency>, String, u32),
+    String(Option<Frequency>, String, u32),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn setup_parser(input: &str) -> Parser {
-        Parser {
-            body: input.chars().collect(),
-            curr_index: 0,
-        }
-    }
 
     #[test]
     fn parse_recursive_message() {
@@ -427,13 +483,15 @@ mod tests {
             }
         }
 //  xd";
-        let mut parser = setup_parser(input);
+        let mut parser = Parser::new(input);
 
         let output = parser.consume_message();
         let expected = Message {
             name: "blah".to_string(),
+            oneofs: vec![],
             messages: vec![Message {
                 name: "inner".to_string(),
+                oneofs: vec![],
                 messages: vec![
                     Message {
                         name: "inner_inner".to_string(),
@@ -446,19 +504,18 @@ mod tests {
                             }],
                         }],
                         fields: vec![
-                            MessageField {
-                                t: Type::String,
-                                frequency: Some(Frequency::Optional),
-                                name: "inner_inner_field".to_string(),
-                                position: 1,
-                            },
-                            MessageField {
-                                t: Type::Int32,
-                                frequency: Some(Frequency::Repeated),
-                                name: "second_inner_inner_field".to_string(),
-                                position: 2,
-                            },
+                            MessageField::String(
+                                Some(Frequency::Optional),
+                                "inner_inner_field".to_string(),
+                                1,
+                            ),
+                            MessageField::Int32(
+                                Some(Frequency::Repeated),
+                                "second_inner_inner_field".to_string(),
+                                2,
+                            ),
                         ],
+                        oneofs: vec![],
                     },
                     Message {
                         name: "second_inner_inner".to_string(),
@@ -476,12 +533,12 @@ mod tests {
                                 },
                             ],
                         }],
-                        fields: vec![MessageField {
-                            t: Type::Int32,
-                            frequency: Some(Frequency::Repeated),
-                            name: "inner_field".to_string(),
-                            position: 1,
-                        }],
+                        fields: vec![MessageField::Int32(
+                            Some(Frequency::Repeated),
+                            "inner_field".to_string(),
+                            1,
+                        )],
+                        oneofs: vec![],
                     },
                 ],
                 enums: vec![Enum {
@@ -492,18 +549,12 @@ mod tests {
                     }],
                 }],
                 fields: vec![
-                    MessageField {
-                        t: Type::String,
-                        frequency: Some(Frequency::Optional),
-                        name: "inner_field".to_string(),
-                        position: 1,
-                    },
-                    MessageField {
-                        t: Type::Int32,
-                        frequency: Some(Frequency::Repeated),
-                        name: "second_inner_field".to_string(),
-                        position: 2,
-                    },
+                    MessageField::String(Some(Frequency::Optional), "inner_field".to_string(), 1),
+                    MessageField::Int32(
+                        Some(Frequency::Repeated),
+                        "second_inner_field".to_string(),
+                        2,
+                    ),
                 ],
             }],
             enums: vec![
@@ -543,24 +594,9 @@ mod tests {
                 },
             ],
             fields: vec![
-                MessageField {
-                    t: Type::Int32,
-                    frequency: Some(Frequency::Repeated),
-                    name: "first".to_string(),
-                    position: 1,
-                },
-                MessageField {
-                    t: Type::String,
-                    frequency: Some(Frequency::Repeated),
-                    name: "second".to_string(),
-                    position: 2,
-                },
-                MessageField {
-                    t: Type::String,
-                    frequency: Some(Frequency::Optional),
-                    name: "third".to_string(),
-                    position: 3,
-                },
+                MessageField::Int32(Some(Frequency::Repeated), "first".to_string(), 1),
+                MessageField::String(Some(Frequency::Repeated), "second".to_string(), 2),
+                MessageField::String(Some(Frequency::Optional), "third".to_string(), 3),
             ],
         };
 
@@ -580,7 +616,7 @@ mod tests {
             age = 3;  // age of person
     }
 //  xd";
-        let mut parser = setup_parser(input);
+        let mut parser = Parser::new(input);
 
         let output = parser.consume_enum();
 
@@ -620,7 +656,7 @@ mod tests {
             required int32 age = 3;  // age of person
     }
 //  xd";
-        let mut parser = setup_parser(input);
+        let mut parser = Parser::new(input);
 
         let res = parser.consume_message();
 
@@ -633,26 +669,48 @@ mod tests {
                 messages: vec![],
                 enums: vec![],
                 fields: vec![
-                    MessageField {
-                        t: Type::String,
-                        frequency: None,
-                        name: "name".to_string(),
-                        position: 1
-                    },
-                    MessageField {
-                        t: Type::Int32,
-                        frequency: None,
-                        name: "id".to_string(),
-                        position: 2
-                    },
-                    MessageField {
-                        t: Type::Int32,
-                        frequency: Some(Frequency::Required),
-                        name: "age".to_string(),
-                        position: 3
-                    }
-                ]
+                    MessageField::String(None, "name".to_string(), 1),
+                    MessageField::Int32(None, "id".to_string(), 2),
+                    MessageField::Int32(Some(Frequency::Required), "age".to_string(), 3)
+                ],
+                oneofs: vec![],
             },
+        );
+    }
+
+    #[test]
+    fn parse_oneof() {
+        let input = "message SampleMessage {
+  oneof test_oneof {
+    string name = 4;
+    int32 sub_message = 9;
+  }
+  }";
+
+        let mut parser = Parser::new(input);
+
+        let res = parser.consume_message();
+
+        assert!(parser.is_finished());
+
+        assert_eq!(
+            res,
+            Message {
+                name: "SampleMessage".to_string(),
+                messages: vec![],
+                enums: vec![],
+                fields: vec![],
+                oneofs: vec![Oneof {
+                    name: "test_oneof".to_string(),
+                    fields: vec![
+                        MessageField::String(None, "name".to_string(), 4),
+                        MessageField::Int32(None, "sub_message".to_string(), 9)
+                    ],
+                    messages: vec![],
+                    enums: vec![],
+                    oneofs: vec![]
+                }]
+            }
         );
     }
 }
