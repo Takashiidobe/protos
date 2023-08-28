@@ -1,3 +1,5 @@
+mod codegen;
+
 #[derive(Debug)]
 pub struct Parser {
     body: Vec<char>,
@@ -12,18 +14,18 @@ const TYPES: &[&str] = &["string", "int32"];
 
 const FREQUENCIES: &[&str] = &["optional", "repeated", "required"];
 
-enum CompoundTypeMarker {
+pub enum CompoundTypeMarker {
     Message,
     Oneof,
 }
 
-enum CompoundType {
+pub enum CompoundType {
     Message(Message),
     Oneof(Oneof),
 }
 
 impl Parser {
-    fn new(input: &str) -> Self {
+    pub fn new(input: &str) -> Self {
         Parser {
             body: str_to_vec(input),
             curr_index: 0,
@@ -166,18 +168,6 @@ impl Parser {
         }
     }
 
-    fn consume_message_fields(&mut self) -> Vec<MessageField> {
-        self.skip_whitespace_or_comment();
-        let mut fields = vec![];
-        while self.curr_char() != '}' {
-            self.skip_whitespace_or_comment();
-            fields.push(self.consume_message_field());
-            self.skip_whitespace_or_comment();
-        }
-        self.skip_whitespace_or_comment();
-        fields
-    }
-
     fn skip_whitespace_or_comment(&mut self) {
         while self.is_whitespace() || self.is_comment() {
             self.skip_whitespace();
@@ -207,7 +197,7 @@ impl Parser {
         self.consume_any(FREQUENCIES).map(|freq| freq.into())
     }
 
-    fn is_finished(&self) -> bool {
+    pub fn is_finished(&self) -> bool {
         self.curr_index == self.body.len()
     }
 
@@ -287,7 +277,7 @@ impl Parser {
         }
     }
 
-    fn consume_message(&mut self) -> Message {
+    pub fn consume_message(&mut self) -> Message {
         let message = self.consume_compound_type(CompoundTypeMarker::Message);
 
         match message {
@@ -354,14 +344,14 @@ impl Parser {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-enum Frequency {
+pub enum Frequency {
     Optional,
     Repeated,
     Required,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Default)]
-struct Message {
+pub struct Message {
     name: String,
     messages: Vec<Message>,
     enums: Vec<Enum>,
@@ -370,7 +360,7 @@ struct Message {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash, Default)]
-struct Oneof {
+pub struct Oneof {
     name: String,
     messages: Vec<Message>,
     enums: Vec<Enum>,
@@ -379,13 +369,13 @@ struct Oneof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-struct EnumField {
+pub struct EnumField {
     name: String,
     position: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
-struct Enum {
+pub struct Enum {
     name: String,
     fields: Vec<EnumField>,
 }
@@ -398,6 +388,17 @@ impl From<String> for Frequency {
             "required" => Self::Required,
             _ => unimplemented!(),
         }
+    }
+}
+
+impl From<Frequency> for String {
+    fn from(val: Frequency) -> Self {
+        match val {
+            Frequency::Optional => "optional",
+            Frequency::Repeated => "repeated",
+            Frequency::Required => "required",
+        }
+        .into()
     }
 }
 
